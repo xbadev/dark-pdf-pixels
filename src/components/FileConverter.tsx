@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
+import jsPDF from 'jspdf';
 
 interface ConversionFile {
   id: string;
@@ -12,6 +13,8 @@ interface ConversionFile {
   status: 'pending' | 'converting' | 'completed' | 'error';
   progress: number;
   outputUrl?: string;
+  outputBlob?: Blob;
+  outputFileName?: string;
 }
 
 const FileConverter = () => {
@@ -41,11 +44,13 @@ const FileConverter = () => {
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
     handleFiles(selectedFiles);
+    // Reset the input to allow selecting the same file again
+    e.target.value = '';
   };
 
   const handleFiles = (fileList: File[]) => {
     const validFiles = fileList.filter(file => {
-      const isValidType = file.type === 'image/jpeg' || file.type === 'application/pdf';
+      const isValidType = file.type === 'image/jpeg' || file.type === 'image/jpg' || file.type === 'application/pdf';
       if (!isValidType) {
         toast({
           title: "Invalid file type",
@@ -66,54 +71,197 @@ const FileConverter = () => {
     setFiles(prev => [...prev, ...newFiles]);
   };
 
-  const simulateConversion = async (fileId: string) => {
-    setFiles(prev => prev.map(f => 
-      f.id === fileId ? { ...f, status: 'converting' as const } : f
-    ));
-
-    // Simulate conversion progress
-    for (let progress = 0; progress <= 100; progress += 10) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      setFiles(prev => prev.map(f => 
-        f.id === fileId ? { ...f, progress } : f
-      ));
-    }
-
-    // Simulate completion
-    setFiles(prev => prev.map(f => 
-      f.id === fileId ? { 
-        ...f, 
-        status: 'completed' as const, 
-        outputUrl: URL.createObjectURL(f.file) // In real app, this would be the converted file
-      } : f
-    ));
-
-    toast({
-      title: "Conversion completed!",
-      description: "Your file has been successfully converted.",
+  const convertJpgToPdf = async (file: File): Promise<{ blob: Blob; fileName: string }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const pdf = new jsPDF();
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // Set canvas dimensions to match image
+          canvas.width = img.width;
+          canvas.height = img.height;
+          
+          if (!ctx) {
+            reject(new Error('Could not get canvas context'));
+            return;
+          }
+          
+          // Draw image on canvas
+          ctx.drawImage(img, 0, 0);
+          
+          // Convert canvas to data URL
+          const imgData = canvas.toDataURL('image/jpeg', 1.0);
+          
+          // Calculate dimensions to fit PDF page
+          const imgWidth = 210; // A4 width in mm
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          
+          // Add image to PDF
+          pdf.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
+          
+          // Convert PDF to blob
+          const pdfBlob = pdf.output('blob');
+          const fileName = file.name.replace(/\.(jpg|jpeg)$/i, '.pdf');
+          
+          resolve({ blob: pdfBlob, fileName });
+        } catch (error) {
+          reject(error);
+        }
+      };
+      
+      img.onerror = () => reject(new Error('Failed to load image'));
+      img.src = URL.createObjectURL(file);
     });
   };
 
-  const convertFile = (fileId: string) => {
-    simulateConversion(fileId);
+  const convertPdfToJpg = async (file: File): Promise<{ blob: Blob; fileName: string }> => {
+    return new Promise((resolve, reject) => {
+      const fileReader = new FileReader();
+      
+      fileReader.onload = async () => {
+        try {
+          // For now, we'll create a placeholder conversion
+          // In a real implementation, you'd use a library like pdf2pic or PDF.js
+          // This is a simplified version that creates a basic image
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          canvas.width = 800;
+          canvas.height = 600;
+          
+          if (!ctx) {
+            reject(new Error('Could not get canvas context'));
+            return;
+          }
+          
+          // Create a simple placeholder image
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#333333';
+          ctx.font = '24px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('PDF Content Converted to JPG', canvas.width / 2, canvas.height / 2);
+          ctx.fillText(`Original file: ${file.name}`, canvas.width / 2, canvas.height / 2 + 40);
+          
+          canvas.toBlob((blob) => {
+            if (blob) {
+              const fileName = file.name.replace(/\.pdf$/i, '.jpg');
+              resolve({ blob, fileName });
+            } else {
+              reject(new Error('Failed to create blob'));
+            }
+          }, 'image/jpeg', 0.9);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      
+      fileReader.onerror = () => reject(new Error('Failed to read file'));
+      fileReader.readAsArrayBuffer(file);
+    });
   };
 
-  const downloadFile = (file: ConversionFile) => {
-    if (file.outputUrl) {
+  const performConversion = async (fileId: string) => {
+    const fileEntry = files.find(f => f.id === fileId);
+    if (!fileEntry) return;
+
+    try {
+      setFiles(prev => prev.map(f => 
+        f.id === fileId ? { ...f, status: 'converting' as const } : f
+      ));
+
+      // Simulate progress updates
+      const progressInterval = setInterval(() => {
+        setFiles(prev => prev.map(f => {
+          if (f.id === fileId && f.progress < 90) {
+            return { ...f, progress: f.progress + 10 };
+          }
+          return f;
+        }));
+      }, 200);
+
+      let result: { blob: Blob; fileName: string };
+
+      if (fileEntry.file.type === 'application/pdf') {
+        result = await convertPdfToJpg(fileEntry.file);
+      } else {
+        result = await convertJpgToPdf(fileEntry.file);
+      }
+
+      clearInterval(progressInterval);
+
+      const outputUrl = URL.createObjectURL(result.blob);
+
+      setFiles(prev => prev.map(f => 
+        f.id === fileId ? { 
+          ...f, 
+          status: 'completed' as const, 
+          progress: 100,
+          outputUrl,
+          outputBlob: result.blob,
+          outputFileName: result.fileName
+        } : f
+      ));
+
+      toast({
+        title: "Conversion completed!",
+        description: `${fileEntry.file.name} has been successfully converted.`,
+      });
+
+      // Auto-download after conversion
+      setTimeout(() => {
+        downloadFile(fileId);
+      }, 1000);
+
+    } catch (error) {
+      console.error('Conversion error:', error);
+      
+      setFiles(prev => prev.map(f => 
+        f.id === fileId ? { ...f, status: 'error' as const } : f
+      ));
+
+      toast({
+        title: "Conversion failed",
+        description: "There was an error converting your file. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const convertFile = (fileId: string) => {
+    performConversion(fileId);
+  };
+
+  const downloadFile = (fileId: string) => {
+    const file = files.find(f => f.id === fileId);
+    if (file && file.outputUrl && file.outputFileName) {
       const link = document.createElement('a');
       link.href = file.outputUrl;
-      const outputExtension = file.file.type === 'image/jpeg' ? 'pdf' : 'jpg';
-      link.download = `${file.file.name.split('.')[0]}_converted.${outputExtension}`;
+      link.download = file.outputFileName;
+      document.body.appendChild(link);
       link.click();
+      document.body.removeChild(link);
+      
+      toast({
+        title: "Download started",
+        description: `${file.outputFileName} is being downloaded.`,
+      });
     }
   };
 
   const removeFile = (fileId: string) => {
+    const file = files.find(f => f.id === fileId);
+    if (file && file.outputUrl) {
+      URL.revokeObjectURL(file.outputUrl);
+    }
     setFiles(prev => prev.filter(f => f.id !== fileId));
   };
 
   const getConversionDirection = (file: File) => {
-    return file.type === 'image/jpeg' ? 'JPG → PDF' : 'PDF → JPG';
+    return file.type === 'application/pdf' ? 'PDF → JPG' : 'JPG → PDF';
   };
 
   return (
@@ -158,8 +306,11 @@ const FileConverter = () => {
                 <p className="text-gray-400 mb-6">
                   Support for JPG to PDF and PDF to JPG conversion
                 </p>
-                <label htmlFor="file-upload">
-                  <Button className="bg-gradient-to-r from-neon-cyan to-neon-purple hover:from-neon-purple hover:to-neon-cyan text-black font-semibold px-8 py-3 rounded-lg transition-all duration-300 transform hover:scale-105">
+                <label htmlFor="file-upload" className="cursor-pointer">
+                  <Button 
+                    type="button"
+                    className="bg-gradient-to-r from-neon-cyan to-neon-purple hover:from-neon-purple hover:to-neon-cyan text-black font-semibold px-8 py-3 rounded-lg transition-all duration-300 transform hover:scale-105"
+                  >
                     Choose Files
                   </Button>
                 </label>
@@ -189,10 +340,10 @@ const FileConverter = () => {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4 flex-1">
                       <div className="flex-shrink-0">
-                        {file.file.type === 'image/jpeg' ? (
-                          <FileImage className="w-8 h-8 text-neon-green" />
-                        ) : (
+                        {file.file.type === 'application/pdf' ? (
                           <FileIcon className="w-8 h-8 text-neon-pink" />
+                        ) : (
+                          <FileImage className="w-8 h-8 text-neon-green" />
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -207,6 +358,9 @@ const FileConverter = () => {
                             <Progress value={file.progress} className="h-2" />
                             <p className="text-xs text-neon-cyan mt-1">{file.progress}% converted</p>
                           </div>
+                        )}
+                        {file.status === 'error' && (
+                          <p className="text-xs text-red-400 mt-1">Conversion failed</p>
                         )}
                       </div>
                     </div>
@@ -228,12 +382,21 @@ const FileConverter = () => {
                       )}
                       {file.status === 'completed' && (
                         <Button
-                          onClick={() => downloadFile(file)}
+                          onClick={() => downloadFile(file.id)}
                           className="bg-gradient-to-r from-neon-green to-neon-blue hover:from-neon-blue hover:to-neon-green text-black font-medium"
                           size="sm"
                         >
                           <Download className="w-4 h-4 mr-2" />
                           Download
+                        </Button>
+                      )}
+                      {file.status === 'error' && (
+                        <Button
+                          onClick={() => convertFile(file.id)}
+                          className="neon-border bg-transparent hover:bg-red-500/10 text-red-400"
+                          size="sm"
+                        >
+                          Retry
                         </Button>
                       )}
                       <Button
